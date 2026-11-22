@@ -1226,11 +1226,16 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
       mrank: number;
       msnippet: string;
     }
+    // EXPERIMENT: SESSIONS_EXP_TOOL_SNIPPET=n shows a tool row's first n chars (the
+    // command, then its output) instead of the 32-token snippet, which stops at the
+    // command's matched terms and so never reaches the output that answers the query.
+    const toolSnippet = Math.max(0, Math.floor(Number(process.env.SESSIONS_EXP_TOOL_SNIPPET ?? 0)) || 0);
     const messageRows = db
       .query<MessageHitRow, [string]>(`
       SELECT file_path, msg_index, role,
              bm25(message_fts, ${MESSAGE_FTS_COLUMN_WEIGHTS.join(', ')}) AS mrank,
-             snippet(message_fts, 3, '', '', '…', 32) AS msnippet
+             CASE WHEN role = 'tool' AND ${toolSnippet} > 0 THEN substr(text, 1, ${toolSnippet})
+                  ELSE snippet(message_fts, 3, '', '', '…', 32) END AS msnippet
       FROM message_fts WHERE message_fts MATCH ?
     `)
       .all(ftsQuery);
