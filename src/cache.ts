@@ -26,10 +26,9 @@ import {
   extractSessionMetadata,
   summarizeMessages,
   sessionParentSession,
-  type ExtractedMessage,
 } from './parser';
 import { buildPiTree } from './pi-tree';
-import { PiFileIndexer, readLineChunks, resumableState, type SessionDoc } from './pi-stream';
+import { PiFileIndexer, readLineChunks, resumableState, type IndexRow, type SessionDoc } from './pi-stream';
 import { extractFiles, extractFilesRead } from './extract-files';
 import { jsonStrings } from './extract-util';
 import { cjkIndexText, cjkQuery, cjkSnippet } from './cjk';
@@ -591,7 +590,7 @@ function writeSessionRow(
   // Subagent transcripts have no place in the parent's message numbering, so their
   // user text rides in a single sentinel row (msg_index -1): it keeps the session
   // findable by subagent-only terms but is excluded from messageHits.
-  if (subagentContent) insert({ role: 'user', text: subagentContent, index: -1, genuine: true, tools: [] });
+  if (subagentContent) insert({ role: 'user', text: subagentContent, index: -1, genuine: true });
   return { cwd: metadata.cwd };
 }
 
@@ -604,7 +603,7 @@ function deleteMessageRows(db: Database, filePath: string): void {
 // One message_fts row per indexed message (see writeSessionRow for which). db.query()
 // caches the prepared statement, which matters at ~74 rows/session; the calls run
 // inside refreshIndex's per-batch transaction, never autocommit.
-function messageInserter(db: Database, filePath: string): (m: ExtractedMessage) => void {
+function messageInserter(db: Database, filePath: string): (m: IndexRow) => void {
   const insertMessage = db.query('INSERT INTO message_fts (file_path, msg_index, role, text) VALUES (?, ?, ?, ?)');
   const insertMessageCjk = db.query('INSERT INTO message_cjk_fts (rowid, file_path, cjk) VALUES (?, ?, ?)');
   // A CJK-bearing message also gets a message_cjk_fts row under the SAME rowid; every
@@ -708,7 +707,7 @@ function indexPiStream(
   const resumed = resumableState(filePath, saved, stat.size);
   const indexer = new PiFileIndexer(resumed ?? undefined);
   const insert = messageInserter(db, filePath);
-  let pending: ExtractedMessage[] | null = resumed ? null : [];
+  let pending: IndexRow[] | null = resumed ? null : [];
   let offset: number;
   // Rows are written inside the caller's transaction, so an unusable file's partial
   // writes are never seen; the first chunk holds the header that decides usability.

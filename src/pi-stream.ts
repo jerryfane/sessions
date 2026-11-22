@@ -16,6 +16,7 @@ import {
   type MessageSummary,
   type SessionMetadata,
 } from './parser';
+import { createExtraRowStream, extraRowOptionsFromEnv, type ExtraRow, type PendingCalls } from './tool-output';
 import {
   collectPiEntries,
   isPiTranscript,
@@ -170,7 +171,14 @@ export interface PiIndexState {
   thinking: CappedTextState;
   custom: CappedTextState;
   entries: SavedEntries;
+  /** EXPERIMENT: tool calls still awaiting their result (only with extra-row variants). */
+  pendingCalls?: PendingCalls;
 }
+
+/** A message_fts row: a transcript message, or an EXPERIMENT extra row. */
+export type IndexRow = Pick<ExtractedMessage, 'text' | 'index' | 'genuine'> & {
+  role: ExtractedMessage['role'] | ExtraRow['role'];
+};
 
 /** Everything the session row and session-level FTS row need from one transcript. */
 export interface SessionDoc {
@@ -261,6 +269,7 @@ export class PiFileIndexer {
   private readonly errors;
   private readonly thinking;
   private readonly custom;
+  private readonly extras;
   private readonly entries: PiEntry[];
   private readonly turns: { first: string; lastUser: string; lastAssistant: string };
   private lines: number;
@@ -276,6 +285,8 @@ export class PiFileIndexer {
     this.errors = createErrorsCollector('pi', state?.errors);
     this.thinking = createThinkingCollector('pi', state?.thinking);
     this.custom = createCustomContextCollector('pi', state?.custom);
+    const extraOptions = extraRowOptionsFromEnv();
+    this.extras = extraOptions ? createExtraRowStream(extraOptions, state?.pendingCalls) : null;
     this.entries = state ? loadEntries(state.entries) : [];
     this.turns = state ? { ...state.turns } : { first: '', lastUser: '', lastAssistant: '' };
     this.lines = state?.lines ?? 0;
@@ -288,7 +299,7 @@ export class PiFileIndexer {
     return this.meta.result().cwd;
   }
 
-  add(lines: string[], emit: (message: ExtractedMessage) => void): void {
+  add(lines: string[], emit: (row: IndexRow) => void): void {
     // The header is on one of the file's first two lines (omp writes a title line first).
     if (this.lines < 2 && !this.forkedFrom) {
       this.forkedFrom = sessionParentSession(lines.slice(0, 2 - this.lines), 'pi');
@@ -299,15 +310,27 @@ export class PiFileIndexer {
       this.tree = isPiTranscript(lines.slice(0, PI_SNIFF_LINES - this.lines));
     }
     this.meta.add(lines);
-    this.messages.add(lines, (message) => {
+    // Line of each message emitted from this chunk, so an extra row lands on its turn.
+    const heads: [number, number][] = [];
+    const before = Math.max(0, this.messages.nextIndex() - 1);
+    this.messages.add(lines, (message, li) => {
       if (message.role === 'user' && message.genuine) {
         if (!this.turns.first) this.turns.first = message.text;
         this.turns.lastUser = message.text;
       } else if (message.role === 'assistant') {
         this.turns.lastAssistant = message.text;
       }
+      heads.push([li, message.index]);
       emit(message);
     });
+    if (this.extras) {
+      let h = 0;
+      let index = before;
+      this.extras.add(lines, (row, li) => {
+        while (h < heads.length && heads[h]![0] <= li) index = heads[h++]![1];
+        emit({ role: row.role, text: row.text, index, genuine: true });
+      });
+    }
     this.files.add(lines);
     this.filesRead.add(lines);
     this.commands.add(lines);
@@ -353,6 +376,7 @@ export class PiFileIndexer {
       thinking: this.thinking.state(),
       custom: this.custom.state(),
       entries: saveEntries(this.entries),
+      pendingCalls: this.extras?.state(),
     };
   }
 }

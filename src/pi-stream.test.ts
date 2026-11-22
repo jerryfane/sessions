@@ -4,20 +4,21 @@ import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { JsonValue } from './extract-util';
-import {
-  extractMessages,
-  extractSessionMetadata,
-  sessionParentSession,
-  summarizeMessages,
-  type ExtractedMessage,
-} from './parser';
+import { extractMessages, extractSessionMetadata, sessionParentSession, summarizeMessages } from './parser';
 import { extractFiles, extractFilesRead } from './extract-files';
 import { extractCommands } from './extract-commands';
 import { extractErrors } from './extract-errors';
 import { extractThinking } from './extract-thinking';
 import { extractCustomContext } from './extract-custom';
 import { buildPiTree } from './pi-tree';
-import { PiFileIndexer, readLineChunks, resumableState, type PiIndexState, type SessionDoc } from './pi-stream';
+import {
+  PiFileIndexer,
+  readLineChunks,
+  resumableState,
+  type IndexRow,
+  type PiIndexState,
+  type SessionDoc,
+} from './pi-stream';
 
 const j = (o: JsonValue): string => JSON.stringify(o);
 
@@ -100,7 +101,7 @@ function wholeFileDoc(lines: string[]) {
   };
 }
 
-const indexed = (m: ExtractedMessage) => ({ role: m.role, text: m.text, index: m.index, genuine: m.genuine });
+const indexed = (m: IndexRow) => ({ role: m.role, text: m.text, index: m.index, genuine: m.genuine });
 
 test('the whole-file fixture exercises every field', () => {
   const { doc } = wholeFileDoc(LINES);
@@ -121,7 +122,7 @@ test('fed in chunks, and resumed from saved JSON state after every chunk, the in
   writeFileSync(file, LINES.join('\n') + '\n');
   for (const size of [1, 2, 3, 5, LINES.length]) {
     let state: PiIndexState | undefined;
-    const emitted: ExtractedMessage[] = [];
+    const emitted: IndexRow[] = [];
     let doc: SessionDoc | undefined;
     for (let start = 0; start < LINES.length; start += size) {
       // A fresh indexer per chunk, seeded from the previous chunk's state as the
