@@ -4,7 +4,9 @@ export type Tool = 'claude' | 'pi' | 'codex' | 'opencode';
 export interface MessageHit {
   /** Message index within the session — feeds get_session_messages(offset) directly. */
   index: number;
-  role: 'user' | 'assistant';
+  /** 'tool': a pi tool result (the call, then the start of its output), placed on its turn. */
+  role: 'user' | 'assistant' | 'tool';
+  /** A short excerpt around the match; for a 'tool' hit, the whole stored row. */
   snippet: string;
 }
 

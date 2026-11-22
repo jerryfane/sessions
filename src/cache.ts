@@ -26,10 +26,10 @@ import {
   extractSessionMetadata,
   summarizeMessages,
   sessionParentSession,
-  type ExtractedMessage,
 } from './parser';
 import { buildPiTree } from './pi-tree';
-import { PiFileIndexer, readLineChunks, resumableState, type SessionDoc } from './pi-stream';
+import { PiFileIndexer, readLineChunks, resumableState, type IndexRow, type SessionDoc } from './pi-stream';
+import { redactSecrets, type RedactionCounts } from './redact';
 import { extractFiles, extractFilesRead } from './extract-files';
 import { jsonStrings } from './extract-util';
 import { cjkIndexText, cjkQuery, cjkSnippet } from './cjk';
@@ -121,15 +121,19 @@ function getCodexDir(): string {
 // v15: adds pi_index_state — per pi file, the byte offset indexed so far and the
 // extractor state at that point, so a refresh parses only appended lines
 // (src/pi-stream.ts). Rows written before it have no state to resume from.
-const SCHEMA_VERSION = 15;
+// v16: pi transcripts also index their tool output (role 'tool' rows, secrets
+// redacted; src/tool-output.ts), which rows written before it lack.
+const SCHEMA_VERSION = 16;
 let _db: Database | null = null;
 let _refreshPromise: Promise<RefreshResult> | null = null;
 let _lastRefreshAt = 0;
-let _lastRefreshResult: RefreshResult = { total: 0, updated: 0 };
+let _lastRefreshResult: RefreshResult = { total: 0, updated: 0, redacted: {} };
 
 interface RefreshResult {
   total: number;
   updated: number;
+  /** Secrets redacted from tool output during the refresh, by kind (counts only). */
+  redacted: RedactionCounts;
 }
 
 export interface RefreshOptions {
@@ -173,7 +177,7 @@ export function closeDb(): void {
   // later ensureIndexFresh must start a new scan rather than join a doomed one.
   _refreshPromise = null;
   _lastRefreshAt = 0;
-  _lastRefreshResult = { total: 0, updated: 0 };
+  _lastRefreshResult = { total: 0, updated: 0, redacted: {} };
   closeOpencodeDb();
 }
 
@@ -493,6 +497,8 @@ interface RefreshCtx {
   dir: string;
   warned: boolean;
   archive: boolean;
+  /** Secrets redacted from tool output so far in this refresh, by kind. */
+  redacted: RedactionCounts;
 }
 
 // Archive one transcript into the vault, best-effort. Indexing must never be blocked
@@ -591,7 +597,7 @@ function writeSessionRow(
   // Subagent transcripts have no place in the parent's message numbering, so their
   // user text rides in a single sentinel row (msg_index -1): it keeps the session
   // findable by subagent-only terms but is excluded from messageHits.
-  if (subagentContent) insert({ role: 'user', text: subagentContent, index: -1, genuine: true, tools: [] });
+  if (subagentContent) insert({ role: 'user', text: subagentContent, index: -1, genuine: true });
   return { cwd: metadata.cwd };
 }
 
@@ -604,7 +610,7 @@ function deleteMessageRows(db: Database, filePath: string): void {
 // One message_fts row per indexed message (see writeSessionRow for which). db.query()
 // caches the prepared statement, which matters at ~74 rows/session; the calls run
 // inside refreshIndex's per-batch transaction, never autocommit.
-function messageInserter(db: Database, filePath: string): (m: ExtractedMessage) => void {
+function messageInserter(db: Database, filePath: string): (m: IndexRow) => void {
   const insertMessage = db.query('INSERT INTO message_fts (file_path, msg_index, role, text) VALUES (?, ?, ?, ?)');
   const insertMessageCjk = db.query('INSERT INTO message_cjk_fts (rowid, file_path, cjk) VALUES (?, ?, ?)');
   // A CJK-bearing message also gets a message_cjk_fts row under the SAME rowid; every
@@ -630,7 +636,10 @@ function writeSessionLevel(
   const sessionId = basename(filePath).replace('.jsonl', '');
   const headline = `${summary.firstPrompt}\n${metadata.customTitle}`;
   const pathsText = [...doc.filesTouched, ...doc.filesRead].join('\n');
-  const commandsText = doc.commands.join('\n');
+  // Commands carry secrets as tool output does (a curl with an auth header), so they
+  // are stored redacted too. Not counted: the row is rewritten on every refresh.
+  const commands = doc.commands.map((c) => redactSecrets(c, {}));
+  const commandsText = commands.join('\n');
   // context_text carries conversational context that is not a message: error text
   // (all tools) plus pi custom/custom_message injections (recaps, web-search
   // fetches, intercom) — extension output, never turns, so it stays out of
@@ -660,7 +669,7 @@ function writeSessionLevel(
       metadata.messageCount,
       JSON.stringify(doc.filesTouched),
       JSON.stringify(doc.filesRead),
-      JSON.stringify(doc.commands),
+      JSON.stringify(commands),
       errors.errored ? 1 : 0,
       errors.count,
       summary.closingUser,
@@ -700,6 +709,7 @@ function indexPiStream(
   filePath: string,
   stat: { mtimeMs: number; size: number },
   hasExisting: boolean,
+  redacted: RedactionCounts,
 ): { cwd: string } | null {
   const saved = hasExisting
     ? (db.query<{ state: string }, [string]>('SELECT state FROM pi_index_state WHERE file_path = ?').get(filePath)
@@ -708,7 +718,7 @@ function indexPiStream(
   const resumed = resumableState(filePath, saved, stat.size);
   const indexer = new PiFileIndexer(resumed ?? undefined);
   const insert = messageInserter(db, filePath);
-  let pending: ExtractedMessage[] | null = resumed ? null : [];
+  let pending: IndexRow[] | null = resumed ? null : [];
   let offset: number;
   // Rows are written inside the caller's transaction, so an unusable file's partial
   // writes are never seen; the first chunk holds the header that decides usability.
@@ -736,6 +746,8 @@ function indexPiStream(
     if (error instanceof UnusablePiFile) return null;
     throw error;
   }
+  // Counted only once the rows are kept: a rolled-back file stored nothing.
+  for (const [kind, n] of Object.entries(indexer.redactions)) redacted[kind] = (redacted[kind] ?? 0) + n;
   return { cwd: indexer.cwd };
 }
 
@@ -760,7 +772,9 @@ function indexFile(db: Database, filePath: string, tool: Tool, ctx: RefreshCtx):
   // Live pi transcripts stream (and resume after their last indexed byte); every
   // other source, and a pi file the stream finds unusable, is parsed whole.
   const streamed =
-    tool === 'pi' && liveSourcePresent(filePath, tool) ? indexPiStream(db, filePath, stat, !!existing) : null;
+    tool === 'pi' && liveSourcePresent(filePath, tool)
+      ? indexPiStream(db, filePath, stat, !!existing, ctx.redacted)
+      : null;
   const indexed = streamed ?? writeSessionRow(db, filePath, tool, stat, readSessionLines(filePath, tool), !!existing);
   if (indexed) {
     // Archive only when the LIVE source is present. `stat` is the live stat in that
@@ -805,6 +819,7 @@ async function runRefreshIndex(opts: RefreshOptions): Promise<RefreshResult> {
     dir: getArchiveDir(),
     warned: false,
     archive: archiveEnabled(),
+    redacted: {},
   };
   // De-duplicate at the boundary. It also makes the set/map work below line up
   // exactly with the total reported to callers.
@@ -925,7 +940,7 @@ async function runRefreshIndex(opts: RefreshOptions): Promise<RefreshResult> {
   // (one warning) but never the refresh itself.
   if (opts.embed !== false) await embedMissingVectors(db);
 
-  return { total: files.length, updated };
+  return { total: files.length, updated, redacted: ctx.redacted };
 }
 
 // The retrieval document embedded per session: title + first prompt + the files
@@ -1218,7 +1233,7 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
       .query<MessageHitRow, [string]>(`
       SELECT file_path, msg_index, role,
              bm25(message_fts, ${MESSAGE_FTS_COLUMN_WEIGHTS.join(', ')}) AS mrank,
-             snippet(message_fts, 3, '', '', '…', 32) AS msnippet
+             CASE WHEN role = 'tool' THEN text ELSE snippet(message_fts, 3, '', '', '…', 32) END AS msnippet
       FROM message_fts WHERE message_fts MATCH ?
     `)
       .all(ftsQuery);
@@ -1286,8 +1301,8 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
       // Sentinel rows (msg_index -1: subagent text) rank the session but are not
       // addressable messages, so they never become visible hits.
       if (m.msg_index >= 0) {
-        // SAFETY: the role column is written by the index from 'user' | 'assistant' values only.
-        agg.hits.push({ hit: { index: m.msg_index, role: m.role as 'user' | 'assistant', snippet: m.msnippet }, rank });
+        // SAFETY: the role column is written by the index from MessageHit roles only.
+        agg.hits.push({ hit: { index: m.msg_index, role: m.role as MessageHit['role'], snippet: m.msnippet }, rank });
       }
     }
 
@@ -1474,7 +1489,7 @@ export interface GrepHit {
   sessionId: string;
   filePath: string;
   date: string;
-  role: 'user' | 'assistant';
+  role: MessageHit['role'];
   /** Feeds get_session_messages(offset) directly — same numbering as message_fts. */
   msgIndex: number;
   snippet: string;
@@ -1603,7 +1618,7 @@ export async function grepSessions(pattern: string, opts: GrepOptions = {}): Pro
         filePath: row.filePath,
         date: row.date,
         // SAFETY: same index-written contract as tool above.
-        role: row.role as 'user' | 'assistant',
+        role: row.role as MessageHit['role'],
         msgIndex: row.msgIndex,
         snippet,
       });

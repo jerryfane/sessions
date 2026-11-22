@@ -4,20 +4,21 @@ import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { JsonValue } from './extract-util';
-import {
-  extractMessages,
-  extractSessionMetadata,
-  sessionParentSession,
-  summarizeMessages,
-  type ExtractedMessage,
-} from './parser';
+import { extractMessages, extractSessionMetadata, sessionParentSession, summarizeMessages } from './parser';
 import { extractFiles, extractFilesRead } from './extract-files';
 import { extractCommands } from './extract-commands';
 import { extractErrors } from './extract-errors';
 import { extractThinking } from './extract-thinking';
 import { extractCustomContext } from './extract-custom';
 import { buildPiTree } from './pi-tree';
-import { PiFileIndexer, readLineChunks, resumableState, type PiIndexState, type SessionDoc } from './pi-stream';
+import {
+  PiFileIndexer,
+  readLineChunks,
+  resumableState,
+  type IndexRow,
+  type PiIndexState,
+  type SessionDoc,
+} from './pi-stream';
 
 const j = (o: JsonValue): string => JSON.stringify(o);
 
@@ -49,9 +50,15 @@ const LINES = [
     { type: 'thinking', thinking: 'the token check is inverted' },
     { type: 'text', text: 'Looking at auth.' },
     { type: 'toolCall', name: 'read', arguments: { path: 'src/auth.ts' } },
-    { type: 'toolCall', name: 'bash', arguments: { command: 'bun test auth' } },
+    { type: 'toolCall', id: 'call1', name: 'bash', arguments: { command: 'bun test auth' } },
   ]),
-  msg('t1', 'a1', 4, { role: 'toolResult', isError: true, content: [{ type: 'text', text: 'auth test failed' }] }),
+  msg('t1', 'a1', 4, {
+    role: 'toolResult',
+    toolCallId: 'call1',
+    toolName: 'bash',
+    isError: true,
+    content: [{ type: 'text', text: 'auth test failed' }],
+  }),
   user('u2', 't1', 5, 'try a rewrite instead'),
   assistant('a2', 'u2', 6, [{ type: 'text', text: 'Rewriting.' }]),
   user('u3', 't1', 7, 'no, keep the patch small'),
@@ -100,7 +107,13 @@ function wholeFileDoc(lines: string[]) {
   };
 }
 
-const indexed = (m: ExtractedMessage) => ({ role: m.role, text: m.text, index: m.index, genuine: m.genuine });
+const indexed = (m: IndexRow) => ({ role: m.role, text: m.text, index: m.index, genuine: m.genuine });
+
+/** The fixture's tool rows: each result under the call that ran it, on the turn it belongs to. */
+const TOOL_ROWS: IndexRow[] = [
+  { role: 'tool', text: 'bun test auth\nauth test failed', index: 1, genuine: true },
+  { role: 'tool', text: 'git status\nnot a repo', index: 5, genuine: true },
+];
 
 test('the whole-file fixture exercises every field', () => {
   const { doc } = wholeFileDoc(LINES);
@@ -121,7 +134,7 @@ test('fed in chunks, and resumed from saved JSON state after every chunk, the in
   writeFileSync(file, LINES.join('\n') + '\n');
   for (const size of [1, 2, 3, 5, LINES.length]) {
     let state: PiIndexState | undefined;
-    const emitted: ExtractedMessage[] = [];
+    const emitted: IndexRow[] = [];
     let doc: SessionDoc | undefined;
     for (let start = 0; start < LINES.length; start += size) {
       // A fresh indexer per chunk, seeded from the previous chunk's state as the
@@ -133,7 +146,9 @@ test('fed in chunks, and resumed from saved JSON state after every chunk, the in
       doc = indexer.doc();
     }
     expect({ size, doc }).toEqual({ size, doc: expected.doc });
-    expect(emitted.map(indexed)).toEqual(expected.messages.map(indexed));
+    expect(emitted.filter((r) => r.role !== 'tool').map(indexed)).toEqual(expected.messages.map(indexed));
+    // Tool rows, including a result read in a later chunk than its call, land on their turn.
+    expect({ size, tools: emitted.filter((r) => r.role === 'tool').map(indexed) }).toEqual({ size, tools: TOOL_ROWS });
   }
 });
 
