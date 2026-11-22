@@ -5,12 +5,6 @@ import { tryParse, asJsonObject, asJsonString } from './extract-util';
  *  ~2k, so 20k is generous while a pathological extension cannot bloat the FTS row. */
 export const MAX_CUSTOM_CONTEXT_LEN = 20_000;
 
-/** Cap on the compaction summary folded into context_text. A long-lived agent session
- *  is mostly compacted history; its newest summary is the densest record of what the
- *  session decided, and the conversation it replaced is no longer in the transcript's
- *  active path. omp summaries run 2-40k chars. */
-export const MAX_COMPACTION_CONTEXT_LEN = 64_000;
-
 /** web-search-results entries carry full page fetches; each URL's content is
  *  truncated so one fetched page cannot eat the whole per-session budget. */
 const MAX_URL_CONTENT_LEN = 500;
@@ -31,14 +25,10 @@ const MAX_URL_CONTENT_LEN = 500;
  */
 function collect(lines: string[]): string {
   const parts: string[] = [];
-  let lastCompaction = '';
   for (const line of lines) {
     const d = tryParse(line);
     if (!d) continue;
-    if (d.type === 'compaction') {
-      // Each summary restates the one before, so only the newest is kept.
-      lastCompaction = asJsonString(d.summary) ?? lastCompaction;
-    } else if (d.type === 'custom') {
+    if (d.type === 'custom') {
       const data = asJsonObject(d.data);
       if (!data) continue;
       if (d.customType === 'recap') {
@@ -63,8 +53,7 @@ function collect(lines: string[]): string {
       if (content !== undefined) parts.push(content);
     }
   }
-  const custom = parts.join('\n').slice(0, MAX_CUSTOM_CONTEXT_LEN);
-  return lastCompaction ? `${custom}\n${lastCompaction.slice(0, MAX_COMPACTION_CONTEXT_LEN)}` : custom;
+  return parts.join('\n').slice(0, MAX_CUSTOM_CONTEXT_LEN);
 }
 
 /**

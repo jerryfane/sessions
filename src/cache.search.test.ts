@@ -610,33 +610,6 @@ test('custom content findable at session level: recap, web-search fetch, and cus
   }
 });
 
-test('compaction: the newest summary is findable at session level, superseded ones are not', async () => {
-  const compaction = (id: string, parentId: string, summary: string) => ({
-    type: 'compaction',
-    id,
-    parentId,
-    timestamp: '2026-08-04T17:05:00.000Z',
-    summary,
-    shortSummary: 'Remote compaction',
-    firstKeptEntryId: parentId,
-    tokensBefore: 300000,
-  });
-  writePi('compacted', [
-    piHeader,
-    piModelChange,
-    piTurn,
-    compaction('k1', 'u1', '## Goal\nthe glorbstale plan'),
-    compaction('k2', 'k1', '## Goal\nship the frobnicated hub; Access app 081ef5aa'),
-  ]);
-  await cache.refreshIndex();
-  for (const term of ['frobnicated', '081ef5aa']) {
-    const r = await cache.searchSessions(term, {});
-    expect(r.map((x) => x.sessionId)).toContain('compacted');
-    expect(r.find((x) => x.sessionId === 'compacted')!.messageHits).toEqual([]);
-  }
-  expect((await cache.searchSessions('glorbstale', {})).map((x) => x.sessionId)).not.toContain('compacted');
-});
-
 test('SESSIONS_REFRESH=external: reads never refresh; refreshIndex (`sessions index`) does', async () => {
   writePi('extrefresh', [
     piHeader,
