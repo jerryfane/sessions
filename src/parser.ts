@@ -24,6 +24,8 @@ interface JsonLine {
   customTitle?: string;
   /** Pi `session_info` entries: the session's name (`pi --name`, `/name`). */
   name?: string;
+  /** oh-my-pi `title` / `title_change` entries: the session's title. */
+  title?: string;
   promptSource?: string | null;
   /** Claude marks auto-generated context-carryover turns (the "continued from a
    *  previous conversation" summary written on compaction) with this flag. */
@@ -320,7 +322,7 @@ export function customTitle(lines: string[]): string {
  * moves. The latest non-empty one wins.
  */
 function ompTitle(d: JsonLine): string {
-  return asJsonString((d as JsonObject).title)?.trim() ?? '';
+  return asJsonString(d.title)?.trim() ?? '';
 }
 
 /**
