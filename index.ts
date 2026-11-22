@@ -101,6 +101,11 @@ if (command === 'index') {
   const result = await refreshIndex();
   // `total` counts every transcript file found, including those indexing skips (no cwd).
   process.stdout.write(`indexed ${result.updated} changed of ${result.total} transcript files\n`);
+  // Counts only: which secrets were kept out of the index, never what they were.
+  const redacted = Object.entries(result.redacted).filter(([, n]) => n > 0);
+  if (redacted.length) {
+    process.stdout.write(`redacted from tool output: ${redacted.map(([kind, n]) => `${kind} ${n}`).join(', ')}\n`);
+  }
   process.exit(0);
 }
 
