@@ -24,6 +24,8 @@ import {
   type PiEntry,
   type PiFork,
 } from './pi-tree';
+import type { RedactionCounts } from './redact';
+import { createToolOutputStream, type PendingCalls } from './tool-output';
 
 /**
  * Streaming, resumable indexing of pi transcripts.
@@ -43,7 +45,7 @@ export const HEAD_BYTES = 4096;
 /** Characters of complete lines handed to the extractors at once. */
 export const CHUNK_CHARS = 16 * 1024 * 1024;
 const READ_BYTES = 4 * 1024 * 1024;
-const STATE_VERSION = 1;
+const STATE_VERSION = 2;
 
 export function headHash(filePath: string, length: number): string {
   const fd = openSync(filePath, 'r');
@@ -170,6 +172,16 @@ export interface PiIndexState {
   thinking: CappedTextState;
   custom: CappedTextState;
   entries: SavedEntries;
+  /** Tool calls whose result has not been read yet. */
+  pendingCalls: PendingCalls;
+}
+
+/** A message_fts row: a transcript message, or a tool result placed on its turn. */
+export interface IndexRow {
+  role: ExtractedMessage['role'] | 'tool';
+  text: string;
+  index: number;
+  genuine: boolean;
 }
 
 /** Everything the session row and session-level FTS row need from one transcript. */
@@ -261,6 +273,7 @@ export class PiFileIndexer {
   private readonly errors;
   private readonly thinking;
   private readonly custom;
+  private readonly tools;
   private readonly entries: PiEntry[];
   private readonly turns: { first: string; lastUser: string; lastAssistant: string };
   private lines: number;
@@ -276,6 +289,7 @@ export class PiFileIndexer {
     this.errors = createErrorsCollector('pi', state?.errors);
     this.thinking = createThinkingCollector('pi', state?.thinking);
     this.custom = createCustomContextCollector('pi', state?.custom);
+    this.tools = createToolOutputStream(state?.pendingCalls);
     this.entries = state ? loadEntries(state.entries) : [];
     this.turns = state ? { ...state.turns } : { first: '', lastUser: '', lastAssistant: '' };
     this.lines = state?.lines ?? 0;
@@ -288,7 +302,12 @@ export class PiFileIndexer {
     return this.meta.result().cwd;
   }
 
-  add(lines: string[], emit: (message: ExtractedMessage) => void): void {
+  /** Secrets redacted from tool output in this indexing pass, by kind. */
+  get redactions(): RedactionCounts {
+    return this.tools.redactions();
+  }
+
+  add(lines: string[], emit: (row: IndexRow) => void): void {
     // The header is on one of the file's first two lines (omp writes a title line first).
     if (this.lines < 2 && !this.forkedFrom) {
       this.forkedFrom = sessionParentSession(lines.slice(0, 2 - this.lines), 'pi');
@@ -299,14 +318,24 @@ export class PiFileIndexer {
       this.tree = isPiTranscript(lines.slice(0, PI_SNIFF_LINES - this.lines));
     }
     this.meta.add(lines);
-    this.messages.add(lines, (message) => {
+    // The line of each message emitted from this chunk, so a tool row lands on its turn.
+    const heads: [number, number][] = [];
+    const before = Math.max(0, this.messages.nextIndex() - 1);
+    this.messages.add(lines, (message, li) => {
       if (message.role === 'user' && message.genuine) {
         if (!this.turns.first) this.turns.first = message.text;
         this.turns.lastUser = message.text;
       } else if (message.role === 'assistant') {
         this.turns.lastAssistant = message.text;
       }
+      heads.push([li, message.index]);
       emit(message);
+    });
+    let h = 0;
+    let index = before;
+    this.tools.add(lines, (text, li) => {
+      while (h < heads.length && heads[h]![0] <= li) index = heads[h++]![1];
+      emit({ role: 'tool', text, index, genuine: true });
     });
     this.files.add(lines);
     this.filesRead.add(lines);
@@ -353,6 +382,7 @@ export class PiFileIndexer {
       thinking: this.thinking.state(),
       custom: this.custom.state(),
       entries: saveEntries(this.entries),
+      pendingCalls: this.tools.pending(),
     };
   }
 }

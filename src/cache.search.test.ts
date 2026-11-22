@@ -687,6 +687,98 @@ test('turn-duration excluded from index (and unknown customTypes are opt-in excl
   expect((await cache.searchSessions('novelnoise', {})).map((x) => x.sessionId)).not.toContain('customnoise');
 });
 
+/** A pi session whose one user turn ran `command`, which printed `output`. */
+function writePiToolTurn(id: string, ask: string, command: string, output: string): void {
+  writePi(id, [
+    piHeader,
+    piModelChange,
+    { ...piTurn, message: { role: 'user', content: [{ type: 'text', text: ask }] } },
+    {
+      type: 'message',
+      id: 'a1',
+      parentId: 'u1',
+      timestamp: '2026-08-04T17:01:01.000Z',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Checking.' },
+          { type: 'toolCall', id: 'call1', name: 'bash', arguments: { command } },
+        ],
+      },
+    },
+    {
+      type: 'message',
+      id: 't1',
+      parentId: 'a1',
+      timestamp: '2026-08-04T17:01:02.000Z',
+      message: { role: 'toolResult', toolCallId: 'call1', toolName: 'bash', content: [{ type: 'text', text: output }] },
+    },
+  ]);
+}
+
+test('pi tool output is searchable, and a hit shows the command and its output on the turn that ran it', async () => {
+  writePiToolTurn(
+    'tooloutput',
+    'which runc is installed',
+    'dpkg -l runc',
+    'ii  runc  1.1.12 amd64 quillfeather runtime',
+  );
+  await cache.refreshIndex();
+  const r = (await cache.searchSessions('quillfeather', {})).find((x) => x.sessionId === 'tooloutput');
+  expect(r?.messageHits).toEqual([
+    { index: 1, role: 'tool', snippet: 'dpkg -l runc\nii runc 1.1.12 amd64 quillfeather runtime' },
+  ]);
+});
+
+test('a secret in pi tool output or its command never reaches the index or a search hit', async () => {
+  // Planted values only; none is a real credential.
+  const secrets = [
+    `ghp_${'A1b2C3d4E5f6G7h8I9j0'}K1l2M3n4O5p6Q7r8`,
+    'Bearer abcDEF123ghiJKL456mnoPQR789',
+    'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJwbGFudGVkIn0.c2lnbmF0dXJlcGxhbnRlZA',
+    '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmU\n-----END OPENSSH PRIVATE KEY-----',
+    'postgres://admin:hunter2plant@db.internal:5432/app',
+    `sk-proj-${'PlantedKey12345'}67890abcdefXYZ`,
+  ];
+  // A distinctive piece of each secret: none may appear anywhere in the index.
+  const pieces = [
+    'A1b2C3d4E5f6G7h8',
+    'abcDEF123ghiJKL456',
+    'c2lnbmF0dXJlcGxhbnRlZA',
+    'b3BlbnNzaC1rZXktdjEAAAAABG5vbmU',
+    'hunter2plant',
+    'PlantedKey12345',
+  ];
+  writePiToolTurn(
+    'toolsecret',
+    'show the zorblax config',
+    `curl -H "Authorization: ${secrets[1]}" https://api.zorblax.test`,
+    `zorblax config\ntoken ${secrets[0]}\njwt ${secrets[2]}\n${secrets[3]}\ndb ${secrets[4]}\napi ${secrets[5]}`,
+  );
+  const refreshed = await cache.refreshIndex();
+  expect(refreshed.redacted.github_token).toBeGreaterThanOrEqual(1);
+
+  const stored = new Database(cache.getDbPath(), { readonly: true });
+  try {
+    const rows = [
+      ...stored.query<{ t: string }, []>("SELECT text AS t FROM message_fts WHERE role = 'tool'").all(),
+      ...stored.query<{ t: string }, []>('SELECT commands AS t FROM sessions').all(),
+      ...stored.query<{ t: string }, []>('SELECT commands AS t FROM session_fts').all(),
+    ]
+      .map((r) => r.t)
+      .join('\n');
+    expect(rows).toContain('zorblax config');
+    for (const piece of pieces) expect(rows).not.toContain(piece);
+  } finally {
+    stored.close();
+  }
+
+  const shown = JSON.stringify(await cache.searchSessions('zorblax', {}));
+  expect(shown).toContain('[REDACTED:github_token]');
+  for (const piece of pieces) expect(shown).not.toContain(piece);
+  expect((await cache.grepSessions(pieces[0]!, {})).totalHits).toBe(0);
+});
+
 test('resolveSessionFile: a bare uuid resolves a pi/codex id that ends in it', async () => {
   const uuid = '01a0d414-2e8c-720d-9624-9761e9511bbb';
   writePi(`2026-08-04T17-00-00-000Z_${uuid}`, [piHeader, piModelChange, piTurn]);

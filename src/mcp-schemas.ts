@@ -19,7 +19,7 @@
 import { z } from 'zod';
 
 const toolName = z.enum(['claude', 'pi', 'codex', 'opencode']);
-const role = z.enum(['user', 'assistant']);
+const role = z.enum(['user', 'assistant', 'tool']);
 const period = z.object({ start: z.string(), end: z.string() });
 /** Hour-of-day / tool-name → count maps, which serialize as plain objects. */
 const counts = z.record(z.string(), z.number());
