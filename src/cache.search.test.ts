@@ -637,6 +637,22 @@ test('compaction: the newest summary is findable at session level, superseded on
   expect((await cache.searchSessions('glorbstale', {})).map((x) => x.sessionId)).not.toContain('compacted');
 });
 
+test('SESSIONS_REFRESH=external: reads never refresh; refreshIndex (`sessions index`) does', async () => {
+  writePi('extrefresh', [
+    piHeader,
+    piModelChange,
+    { ...piTurn, message: { role: 'user', content: [{ type: 'text', text: 'the plinthwobble turn' }] } },
+  ]);
+  process.env.SESSIONS_REFRESH = 'external';
+  try {
+    expect((await cache.searchSessions('plinthwobble', {})).map((x) => x.sessionId)).not.toContain('extrefresh');
+    await cache.refreshIndex();
+    expect((await cache.searchSessions('plinthwobble', {})).map((x) => x.sessionId)).toContain('extrefresh');
+  } finally {
+    delete process.env.SESSIONS_REFRESH;
+  }
+});
+
 test('turn-duration excluded from index (and unknown customTypes are opt-in excluded)', async () => {
   writePi('customnoise', [
     piHeader,
