@@ -108,6 +108,7 @@ export function extractSessionMetadata(lines: string[], tool: Tool): SessionMeta
 
     if (d.type === 'custom-title') title = d.customTitle ?? '';
     else if (d.type === 'session_info') title = piSessionName(d);
+    else if (tool === 'pi' && (d.type === 'title' || d.type === 'title_change')) title = ompTitle(d) || title;
 
     if (d.timestamp?.[0] === '2') {
       const date = d.timestamp.slice(0, 10);
@@ -164,9 +165,12 @@ export function sessionParentSession(lines: string[], tool: Tool): string {
   // session_meta — neither has a type:'session' line 1, but only pi's header can
   // carry parentSession at all, so non-pi returns without a parse.
   if (tool !== 'pi' || lines.length === 0) return '';
-  const d = tryParseJson(lines[0]!);
-  const ps = d?.type === 'session' ? asJsonString(d.parentSession) : undefined;
-  return ps ?? '';
+  // Pi's header is line 1; omp writes a `title` line first, so look at line 2 too.
+  for (const line of lines.slice(0, 2)) {
+    const d = tryParseJson(line);
+    if (d?.type === 'session') return asJsonString(d.parentSession) ?? '';
+  }
+  return '';
 }
 
 export function getCwdFromSession(lines: string[], tool: Tool): string {
@@ -289,9 +293,20 @@ export function customTitle(lines: string[]): string {
       title = asJsonString(d.customTitle) ?? '';
     } else if (d.type === 'session_info') {
       title = piSessionName(d);
+    } else if (d.type === 'title' || d.type === 'title_change') {
+      title = ompTitle(d) || title;
     }
   }
   return title;
+}
+
+/**
+ * The title an oh-my-pi (omp) transcript carries: omp writes a `{type:'title'}` line
+ * before its session header and a `{type:'title_change'}` entry each time the title
+ * moves. The latest non-empty one wins.
+ */
+function ompTitle(d: JsonLine): string {
+  return asJsonString((d as JsonObject).title)?.trim() ?? '';
 }
 
 /**
