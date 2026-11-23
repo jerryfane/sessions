@@ -460,10 +460,10 @@ test('grep_sessions: an invalid regex surfaces isError', async () => {
 });
 
 test('grep_sessions: a regex sent without regex=true is retried as a regex after a literal miss', async () => {
-  const parsed = JSON.parse((await mcp.runGrepSessions({ pattern: 'mango\\w+' })).content[0]!.text);
-  expect(parsed.matchedAs).toBe('regex');
-  expect(parsed.hits[0].role).toBe('assistant');
-  expect(parsed.hits[0].msgIndex).toBe(2);
+  const parsed = asJsonObject(structuredOf(await mcp.runGrepSessions({ pattern: 'mango\\w+' })));
+  expect(parsed?.matchedAs).toBe('regex');
+  expect(parsed?.totalHits).toBe(1);
+  expect(JSON.stringify(parsed?.hits)).toContain('"msgIndex":2');
 });
 
 test('grep_sessions: a literal miss that is not a valid regex stays a friendly miss', async () => {
