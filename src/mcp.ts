@@ -6,6 +6,7 @@ import { basename } from 'node:path';
 import {
   searchSessions,
   grepSessions,
+  type GrepOptions,
   getActivityDigest,
   getSessionMetrics,
   getContextPrimer,
@@ -385,6 +386,11 @@ export async function runGetMemoryRecurrence(args: { repo?: string; all?: boolea
   return toolResult({ ...run.report });
 }
 
+/** Regex syntax a literal search text almost never contains: `.*`, `.+`, `.?`, `.{n`, `\d`-style
+ *  classes, `(?:`-style groups. Brackets and `|` are left out: they are common in plain text, and
+ *  read as a regex they match far more than was meant. */
+const REGEX_SYNTAX = /\.[*+?]|\.\{\d|\\[dwsbDWSB]|\(\?[:=!<]/;
+
 // Exported, testable seam: the grep_sessions tool delegates here so its exhaustive-match
 // behavior, totals, and truncation can be unit-tested without MCP plumbing.
 export async function runGrepSessions(
@@ -402,10 +408,10 @@ export async function runGrepSessions(
   caller?: Caller,
 ): Promise<ToolResult> {
   let result;
+  let matchedAs: 'literal' | 'regex' = args.regex ? 'regex' : 'literal';
   try {
     const exclude = await ownSession(caller);
-    result = await grepSessions(args.pattern, {
-      regex: args.regex,
+    const options: GrepOptions = {
       ignoreCase: args.ignoreCase,
       role: args.role,
       tool: args.tool ?? '',
@@ -414,7 +420,17 @@ export async function runGrepSessions(
       before: args.before,
       limit: args.limit ?? 50,
       exclude,
-    });
+    };
+    result = await grepSessions(args.pattern, { ...options, regex: args.regex });
+    // Agents often send a regex without regex=true, and a literal search for it finds nothing.
+    // When the pattern reads as a regex, a literal miss is retried as one; matchedAs says which.
+    if (result.totalHits === 0 && !args.regex && REGEX_SYNTAX.test(args.pattern)) {
+      const retry = await grepSessions(args.pattern, { ...options, regex: true }).catch(() => null);
+      if (retry && retry.totalHits > 0) {
+        result = retry;
+        matchedAs = 'regex';
+      }
+    }
   } catch (e) {
     return toolError(e instanceof Error ? e.message : String(e));
   }
@@ -424,6 +440,7 @@ export async function runGrepSessions(
     totalSessions: result.totalSessions,
     returnedHits: result.returnedHits,
     truncated: result.truncated,
+    matchedAs,
     hits: result.hits.map((h) => ({
       tool: h.tool,
       project: h.project,
@@ -666,7 +683,12 @@ function registerTools(server: McpServer): void {
       description:
         'Exhaustively find EVERY message across all past sessions matching a literal string or regex — use this (not search_sessions) whenever completeness or a count matters: "every time I said X", "how many times", "all sessions where…", or any exact-pattern search. Returns totalHits (uncapped count of matching messages), totalSessions, and up to `limit` hit snippets; each hit carries filePath + msgIndex to feed get_session_messages(offset) directly (add include_tools to see what the assistant did around it). truncated=true means more matched than were returned — raise limit or narrow with filters. Searches message prose (user turns + assistant text), not assistant tool-call inputs. Your own live session is left out when it can be identified.',
       inputSchema: {
-        pattern: z.string().min(1).describe('Literal substring by default; a JS regex when regex=true.'),
+        pattern: z
+          .string()
+          .min(1)
+          .describe(
+            'Literal substring by default; a JS regex when regex=true. A literal search that finds nothing is retried as a regex when the pattern contains regex syntax such as .* or \\d (matchedAs says which way it matched).',
+          ),
         regex: z.boolean().optional().default(false).describe('Treat pattern as a JS regular expression.'),
         ignoreCase: z.boolean().optional().default(true).describe('Case-insensitive match (default true).'),
         role: z.enum(['user', 'assistant']).optional().describe('Restrict to your turns (user) or the AI (assistant).'),

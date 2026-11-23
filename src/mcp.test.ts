@@ -429,6 +429,7 @@ test('grep_sessions: exhaustive hit carries msgIndex that feeds get_session_mess
   const res = await mcp.runGrepSessions({ pattern: 'flaky' });
   const parsed = JSON.parse(res.content[0]!.text);
   expect(parsed.totalHits).toBe(1);
+  expect(parsed.matchedAs).toBe('literal');
   expect(parsed.totalSessions).toBe(1);
   const hit = parsed.hits[0];
   expect(hit.sessionId).toBe('b');
@@ -456,6 +457,20 @@ test('grep_sessions: an invalid regex surfaces isError', async () => {
   const res = await mcp.runGrepSessions({ pattern: '(unclosed', regex: true });
   expect(res.isError).toBe(true);
   expect(res.content[0]!.text).toContain('Invalid regex');
+});
+
+test('grep_sessions: a regex sent without regex=true is retried as a regex after a literal miss', async () => {
+  const parsed = JSON.parse((await mcp.runGrepSessions({ pattern: 'mango\\w+' })).content[0]!.text);
+  expect(parsed.matchedAs).toBe('regex');
+  expect(parsed.hits[0].role).toBe('assistant');
+  expect(parsed.hits[0].msgIndex).toBe(2);
+});
+
+test('grep_sessions: a literal miss that is not a valid regex stays a friendly miss', async () => {
+  const res = await mcp.runGrepSessions({ pattern: '(?:mango\\w+' });
+  expect(res.isError).toBeUndefined();
+  expect(res.content[0]!.text).toContain('No matching messages found');
+  expect(asJsonObject(structuredOf(res))?.matchedAs).toBe('literal');
 });
 
 // ——— get_session_messages include_tools — additive ———

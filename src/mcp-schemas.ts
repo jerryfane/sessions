@@ -218,6 +218,8 @@ export const GrepSessionsOutput = z.object({
   totalSessions: z.number(),
   returnedHits: z.number(),
   truncated: z.boolean(),
+  /** 'regex' also when a literal search found nothing and the pattern was retried as a regex. */
+  matchedAs: z.enum(['literal', 'regex']),
   hits: z.array(
     z.object({
       tool: toolName,
