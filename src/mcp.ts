@@ -146,6 +146,9 @@ type ReviewedMemoryPayload = z.infer<typeof ReviewAgentMemoriesOutput>['memories
 /** One message row in the get_session_messages payload (schema-derived). */
 type SessionMessagePayload = z.infer<typeof GetSessionMessagesOutput>['messages'][number];
 
+const PROJECT_FILTER =
+  "Filter to sessions from this project: a directory path, or a bare folder name (e.g. 'sessions') for every folder of that name. Each result shows the full path that matched.";
+
 // Exported, testable seam: the search_sessions tool delegates to this so its behavior
 // (errored filter, per-result metadata, resumeCommand) can be unit-tested without MCP.
 /** Who is calling this server: the handshake's client name plus the process's own start and cwd. */
@@ -618,7 +621,7 @@ function registerTools(server: McpServer): void {
             'Text to search across session messages, commands, file paths, errors, and reasoning. Natural-language queries work — results are ranked by relevance and any term may match. Omit to list recent sessions.',
           ),
         tool: z.enum(['claude', 'codex', 'pi', 'opencode']).optional().describe('Filter to a specific tool'),
-        project: z.string().optional().describe('Filter to sessions from this project directory path'),
+        project: z.string().optional().describe(PROJECT_FILTER),
         errored: z.boolean().optional().describe('Only return sessions that hit an error'),
         files: z
           .array(z.string())
@@ -671,7 +674,7 @@ function registerTools(server: McpServer): void {
         ignoreCase: z.boolean().optional().default(true).describe('Case-insensitive match (default true).'),
         role: z.enum(['user', 'assistant']).optional().describe('Restrict to your turns (user) or the AI (assistant).'),
         tool: z.enum(['claude', 'codex', 'pi', 'opencode']).optional().describe('Filter to a specific tool.'),
-        project: z.string().optional().describe('Filter to sessions from this project directory path.'),
+        project: z.string().optional().describe(PROJECT_FILTER),
         after: z.string().optional().describe('Only sessions on/after this date (YYYY-MM-DD).'),
         before: z.string().optional().describe('Only sessions on/before this date (YYYY-MM-DD).'),
         limit: pageSize(
@@ -767,7 +770,7 @@ function registerTools(server: McpServer): void {
         startDate: z.string().describe('Start date inclusive (YYYY-MM-DD). Example: "2026-05-07"'),
         endDate: z.string().describe('End date inclusive (YYYY-MM-DD). Example: "2026-05-14"'),
         tool: z.enum(['claude', 'codex', 'pi', 'opencode']).optional().describe('Filter to a specific tool'),
-        project: z.string().optional().describe('Filter to sessions from this project directory path'),
+        project: z.string().optional().describe(PROJECT_FILTER),
         detail: z
           .enum(['compact', 'highlights', 'full'])
           .optional()
@@ -798,7 +801,7 @@ function registerTools(server: McpServer): void {
         startDate: z.string().describe('Start date inclusive (YYYY-MM-DD). Example: "2026-05-07"'),
         endDate: z.string().describe('End date inclusive (YYYY-MM-DD). Example: "2026-05-14"'),
         tool: z.enum(['claude', 'codex', 'pi', 'opencode']).optional().describe('Filter to a specific tool'),
-        project: z.string().optional().describe('Filter to sessions from this project directory path'),
+        project: z.string().optional().describe(PROJECT_FILTER),
       },
       outputSchema: GetSessionMetricsOutput,
       annotations: READ_ONLY,

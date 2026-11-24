@@ -530,6 +530,12 @@ test('grep: project and tool filters scope results', async () => {
   expect((await cache.grepSessions('zanzibar', { tool: 'codex' })).totalHits).toBe(0);
 });
 
+test('grep: a bare project name matches every folder of that name, not names that merely contain it', async () => {
+  expect((await cache.grepSessions('zanzibar', { project: 'repoD' })).totalSessions).toBe(1);
+  expect((await cache.grepSessions('zanzibar', { project: 'repo' })).totalSessions).toBe(0);
+  expect((await cache.grepSessions('zanzibar', { project: 'oD' })).totalSessions).toBe(0);
+});
+
 test('grep: limit caps returned snippets but totalHits counts all (honest truncation)', async () => {
   const r = await cache.grepSessions('zanzibar', { limit: 1 });
   expect(r.returnedHits).toBe(1);
