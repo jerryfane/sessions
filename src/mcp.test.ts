@@ -466,6 +466,12 @@ test('grep_sessions: a regex sent without regex=true is retried as a regex after
   expect(JSON.stringify(parsed?.hits)).toContain('"msgIndex":2');
 });
 
+test('grep_sessions: a pattern with escaped punctuation is retried as a regex after a literal miss', async () => {
+  const parsed = asJsonObject(structuredOf(await mcp.runGrepSessions({ pattern: 'the \\(?mangowurzel\\)? fix' })));
+  expect(parsed?.matchedAs).toBe('regex');
+  expect(parsed?.totalHits).toBe(1);
+});
+
 test('grep_sessions: a literal miss that is not a valid regex stays a friendly miss', async () => {
   const res = await mcp.runGrepSessions({ pattern: '(?:mango\\w+' });
   expect(res.isError).toBeUndefined();

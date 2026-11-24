@@ -387,9 +387,9 @@ export async function runGetMemoryRecurrence(args: { repo?: string; all?: boolea
 }
 
 /** Regex syntax a literal search text almost never contains: `.*`, `.+`, `.?`, `.{n`, `\d`-style
- *  classes, `(?:`-style groups. Brackets and `|` are left out: they are common in plain text, and
- *  read as a regex they match far more than was meant. */
-const REGEX_SYNTAX = /\.[*+?]|\.\{\d|\\[dwsbDWSB]|\(\?[:=!<]/;
+ *  classes, escaped punctuation such as `\.` or `\(`, `(?:`-style groups. Brackets and `|` are left
+ *  out: they are common in plain text, and read as a regex they match far more than was meant. */
+const REGEX_SYNTAX = /\.[*+?]|\.\{\d|\\[dwsbDWSB]|\\[.()[\]{}*+?|^$/]|\(\?[:=!<]/;
 
 // Exported, testable seam: the grep_sessions tool delegates here so its exhaustive-match
 // behavior, totals, and truncation can be unit-tested without MCP plumbing.
