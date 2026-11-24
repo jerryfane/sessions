@@ -2167,15 +2167,19 @@ interface ScopeClause {
  * worktree whose main checkout (`repo`, recorded at index time) is. A live worktree is
  * also in `git worktree list`, but only `repo` survives the worktree's removal. Same
  * boundary rule on both columns, so a `…-v2` sibling stays out. `alias` qualifies the
- * columns for a join (`s.`); `byRepo` false matches on cwd alone.
+ * columns for a join (`s.`); `byRepo` false matches on cwd alone. A bare name with no `/`
+ * (`pumplab`) selects every folder of that name and its subfolders: agents pass a project's
+ * name at least as often as its path, and as a path it can match nothing.
  */
 function underRoot(root: string, alias = '', byRepo = true): ScopeClause {
   const glob = globPrefix(root);
-  if (!byRepo) return { clause: `(${alias}cwd = ? OR ${alias}cwd GLOB ?)`, params: [root, glob] };
-  return {
-    clause: `(${alias}cwd = ? OR ${alias}cwd GLOB ? OR ${alias}repo = ? OR ${alias}repo GLOB ?)`,
-    params: [root, glob, root, glob],
-  };
+  const byName = !root.includes('/');
+  // Same two tests either way: the folder itself, then anything below it.
+  const op = byName ? 'GLOB' : '=';
+  const pair = byName ? ['*/' + glob.slice(0, -2), '*/' + glob] : [root, glob];
+  const one = (col: string) => `${alias}${col} ${op} ? OR ${alias}${col} GLOB ?`;
+  if (!byRepo) return { clause: `(${one('cwd')})`, params: pair };
+  return { clause: `(${one('cwd')} OR ${one('repo')})`, params: [...pair, ...pair] };
 }
 
 function repoScopeClause(roots: string[], byRepo = true): ScopeClause {
